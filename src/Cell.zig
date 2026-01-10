@@ -125,6 +125,7 @@ pub const Color = union(enum) {
     default,
     index: u8,
     rgb: [3]u8,
+    rgba: [4]u8,
 
     pub const Kind = union(enum) {
         fg,
@@ -158,6 +159,14 @@ pub const Color = union(enum) {
                     .rgb => |b_rgb| return a_rgb[0] == b_rgb[0] and
                         a_rgb[1] == b_rgb[1] and
                         a_rgb[2] == b_rgb[2],
+                    else => return false,
+                }
+            },
+            .rgba => |a_rgb| {
+                switch (b) {
+                    .rgba => |b_rgb| return a_rgb[0] == b_rgb[0] and
+                        a_rgb[1] == b_rgb[1] and
+                        a_rgb[2] == b_rgb[2] and a_rgb[3] == b_rgb[3],
                     else => return false,
                 }
             },

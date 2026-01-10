@@ -581,6 +581,12 @@ pub fn render(self: *Vaxis, tty: *IoWriter) !void {
                         .legacy => try tty.print(ctlseqs.fg_rgb_legacy, .{ rgb[0], rgb[1], rgb[2] }),
                     }
                 },
+                .rgba => |rgba| {
+                    switch (self.sgr) {
+                        .standard => try tty.print(ctlseqs.fg_rgb, .{ rgba[0], rgba[1], rgba[2] }),
+                        .legacy => try tty.print(ctlseqs.fg_rgb_legacy, .{ rgba[0], rgba[1], rgba[2] }),
+                    }
+                },
             }
         }
         // background
@@ -605,6 +611,12 @@ pub fn render(self: *Vaxis, tty: *IoWriter) !void {
                         .legacy => try tty.print(ctlseqs.bg_rgb_legacy, .{ rgb[0], rgb[1], rgb[2] }),
                     }
                 },
+                .rgba => |rgba| {
+                    switch (self.sgr) {
+                        .standard => try tty.print(ctlseqs.bg_rgb, .{ rgba[0], rgba[1], rgba[2] }),
+                        .legacy => try tty.print(ctlseqs.bg_rgb_legacy, .{ rgba[0], rgba[1], rgba[2] }),
+                    }
+                },
             }
         }
         // underline color
@@ -623,6 +635,14 @@ pub fn render(self: *Vaxis, tty: *IoWriter) !void {
                     else switch (self.sgr) {
                         .standard => try tty.print(ctlseqs.ul_rgb, .{ rgb[0], rgb[1], rgb[2] }),
                         .legacy => try tty.print(ctlseqs.ul_rgb_legacy, .{ rgb[0], rgb[1], rgb[2] }),
+                    }
+                },
+                .rgba => |rgba| {
+                    if (self.enable_workarounds)
+                        try tty.print(ctlseqs.ul_rgb_conpty, .{ rgba[0], rgba[1], rgba[2] })
+                    else switch (self.sgr) {
+                        .standard => try tty.print(ctlseqs.ul_rgb, .{ rgba[0], rgba[1], rgba[2] }),
+                        .legacy => try tty.print(ctlseqs.ul_rgb_legacy, .{ rgba[0], rgba[1], rgba[2] }),
                     }
                 },
             }
