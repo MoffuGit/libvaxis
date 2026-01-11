@@ -46,13 +46,21 @@ pub fn deinit(self: *Screen, alloc: std.mem.Allocator) void {
 }
 
 /// writes a cell to a location. 0 indexed
-pub fn writeCell(self: *Screen, col: u16, row: u16, cell: Cell) void {
+pub fn writeCellO(self: *Screen, col: u16, row: u16, cell: Cell) void {
     if (col >= self.width or
         row >= self.height)
         return;
     const i = (@as(usize, @intCast(row)) * self.width) + col;
     assert(i < self.buf.len);
     self.buf[i] = cell;
+}
+
+pub fn writeCell(self: *Screen, col: u16, row: u16, cell: Cell) void {
+    if (self.readCell(col, row)) |other| {
+        self.writeCellO(col, row, cell.blend(other));
+    } else {
+        self.writeCellO(col, row, cell);
+    }
 }
 
 pub fn readCell(self: *const Screen, col: u16, row: u16) ?Cell {

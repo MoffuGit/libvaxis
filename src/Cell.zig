@@ -1,6 +1,18 @@
 const std = @import("std");
 const Image = @import("Image.zig");
 
+const Self = @This();
+
+const Vec3 = @Vector(3, f32);
+
+fn u8Tof32(int: u8) f32 {
+    return @as(f32, @floatFromInt(int)) / 255.0;
+}
+
+fn f32Tou8(float: f32) u8 {
+    return @as(u8, @intFromFloat(std.math.round(float * 255.0)));
+}
+
 char: Character = .{},
 style: Style = .{},
 link: Hyperlink = .{},
@@ -173,6 +185,60 @@ pub const Color = union(enum) {
         }
     }
 
+    pub fn alpha(self: Color) f32 {
+        switch (self) {
+            .default, .index, .rgb => return 1.0,
+            .rgba => |rgba| {
+                return u8Tof32(rgba[3]);
+            },
+        }
+    }
+
+    pub fn isOpaque(self: Color) bool {
+        return self.alpha() == 1.0;
+    }
+
+    pub fn isRgb(self: Color) bool {
+        switch (self) {
+            .rgb, .rgba => return true,
+            else => return false,
+        }
+    }
+
+    pub fn getVec3(self: Color) Vec3 {
+        switch (self) {
+            .rgb => |rgb| return Vec3{ u8Tof32(rgb[0]), u8Tof32(rgb[1]), u8Tof32(rgb[2]) },
+            .rgba => |rgba| return Vec3{ u8Tof32(rgba[0]), u8Tof32(rgba[1]), u8Tof32(rgba[2]) },
+            else => return Vec3{ 0.0, 0.0, 0.0 },
+        }
+    }
+
+    pub fn blend(self: Color, other: Color) Color {
+        if (self.isOpaque() or !other.isRgb()) {
+            return self;
+        }
+
+        const a = self.alpha();
+
+        var perceptualAlpha: f32 = undefined;
+        if (a > 0.8) {
+            const normalizedHighAlpha = (a - 0.8) * 5.0;
+            const curvedHighAlpha = std.math.pow(f32, normalizedHighAlpha, 0.2);
+            perceptualAlpha = 0.8 + (curvedHighAlpha * 0.2);
+        } else {
+            perceptualAlpha = std.math.pow(f32, a, 0.9);
+        }
+
+        const vec3_s = self.getVec3();
+        const vec3_o = other.getVec3();
+
+        const alphaSplat = @as(Vec3, @splat(perceptualAlpha));
+        const oneMinusAlpha = @as(Vec3, @splat(1.0 - perceptualAlpha));
+        const blended = vec3_s * alphaSplat + vec3_o * oneMinusAlpha;
+
+        return .{ .rgba = .{ f32Tou8(blended[0]), f32Tou8(blended[1]), f32Tou8(blended[2]), f32Tou8(other.alpha()) } };
+    }
+
     pub fn rgbFromUint(val: u24) Color {
         const r_bits = val & 0b11111111_00000000_00000000;
         const g_bits = val & 0b00000000_11111111_00000000;
@@ -228,3 +294,29 @@ pub const Color = union(enum) {
         }
     }
 };
+
+pub fn blend(self: Self, other: Self) Self {
+    const is_bg_rgb = other.style.bg.isRgb();
+    const is_fg_rgb = other.style.fg.isRgb();
+
+    if (!is_bg_rgb and !is_fg_rgb) return self;
+
+    const is_bg_opaque = self.style.bg.isOpaque();
+    const is_fg_opaque = self.style.fg.isOpaque();
+
+    if (is_bg_opaque and is_fg_opaque) return self;
+
+    const preserve_char = false;
+
+    const bg = self.style.bg.blend(other.style.bg);
+    const fg = if (preserve_char) self.style.bg.blend(other.style.fg) else self.style.fg.blend(other.style.bg);
+    // const char = if (preserve_char) other.char else self.char;
+    var style = self.style;
+    style.bg = bg;
+    style.fg = fg;
+
+    var cell = self;
+    cell.style = style;
+
+    return cell;
+}

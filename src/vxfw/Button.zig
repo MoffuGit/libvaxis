@@ -18,7 +18,7 @@ userdata: ?*anyopaque = null,
 // Styles
 style: struct {
     default: vaxis.Style = .{ .reverse = true },
-    mouse_down: vaxis.Style = .{ .fg = .{ .index = 4 }, .reverse = true },
+    mouse_down: vaxis.Style = .{ .bg = .{ .rgba = .{ 255, 0, 0, 1 } }, .fg = .{ .rgba = .{ 0, 0, 0, 100 } } },
     hover: vaxis.Style = .{ .fg = .{ .index = 3 }, .reverse = true },
     focus: vaxis.Style = .{ .fg = .{ .index = 5 }, .reverse = true },
 } = .{},
