@@ -44,8 +44,8 @@ pub fn main() !void {
         down,
     } = .up;
 
-    const fg = [_]u8{ 192, 202, 245 };
-    const bg = [_]u8{ 26, 27, 38 };
+    const fg = [_]u8{ 192, 202, 245, 255 };
+    const bg = [_]u8{ 0, 0, 0, 255 };
 
     // block until we get a resize
     while (true) {
@@ -69,10 +69,12 @@ pub fn main() !void {
 
         const win = vx.window();
         win.clear();
+        win.fill(.{ .style = .{ .bg = .{ .rgb = .{ 0, 0, 0 } }, .fg = .{ .rgba = .{ 0, 0, 0, 255 } } } });
 
-        const color = try blendColors(bg, fg, pct);
+        var color = fg;
+        color[3] = pct;
 
-        const style: vaxis.Style = .{ .fg = color };
+        const style: vaxis.Style = .{ .fg = .{ .rgba = color }, .bg = .{ .rgba = bg } };
 
         const segment: vaxis.Segment = .{
             .text = vaxis.logo,
@@ -88,7 +90,7 @@ pub fn main() !void {
         switch (dir) {
             .up => {
                 pct += 1;
-                if (pct == 100) dir = .down;
+                if (pct == 255) dir = .down;
             },
             .down => {
                 pct -= 1;

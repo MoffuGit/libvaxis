@@ -5,7 +5,6 @@ const vxfw = vaxis.vxfw;
 const Model = struct {
     list: std.ArrayList(vxfw.Text),
     /// Memory owned by .arena
-    filtered: std.ArrayList(vxfw.RichText),
     list_view: vxfw.ListView,
     text_field: vxfw.TextField,
 

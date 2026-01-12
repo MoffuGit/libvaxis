@@ -131,6 +131,18 @@ pub const Style = struct {
             Color.eql(a.ul, b.ul) and
             a.ul_style == b.ul_style;
     }
+
+    pub fn canBlend(self: Style) bool {
+        return self.bg.isRgb() or self.fg.isRgb() or self.ul.isRgb();
+    }
+
+    pub fn isOpaque(self: Style) bool {
+        return self.bg.isOpaque() and self.fg.isOpaque() and self.ul.isOpaque();
+    }
+
+    pub fn isTransparent(self: Style) bool {
+        return self.bg.isTransparent() and self.fg.isTransparent() and self.ul.isTransparent();
+    }
 };
 
 pub const Color = union(enum) {
@@ -198,6 +210,10 @@ pub const Color = union(enum) {
         return self.alpha() == 1.0;
     }
 
+    pub fn isTransparent(self: Color) bool {
+        return self.alpha() == 0.0;
+    }
+
     pub fn isRgb(self: Color) bool {
         switch (self) {
             .rgb, .rgba => return true,
@@ -216,6 +232,10 @@ pub const Color = union(enum) {
     pub fn blend(self: Color, other: Color) Color {
         if (self.isOpaque() or !other.isRgb()) {
             return self;
+        }
+
+        if (self.isTransparent()) {
+            return other;
         }
 
         const a = self.alpha();
@@ -296,27 +316,22 @@ pub const Color = union(enum) {
 };
 
 pub fn blend(self: Self, other: Self) Self {
-    const is_bg_rgb = other.style.bg.isRgb();
-    const is_fg_rgb = other.style.fg.isRgb();
+    if (!other.style.canBlend() or self.style.isOpaque()) {
+        return self;
+    }
 
-    if (!is_bg_rgb and !is_fg_rgb) return self;
+    if (self.style.isTransparent() or self.style.invisible) {
+        return other;
+    }
 
-    const is_bg_opaque = self.style.bg.isOpaque();
-    const is_fg_opaque = self.style.fg.isOpaque();
+    const preserve = false;
 
-    if (is_bg_opaque and is_fg_opaque) return self;
+    var cell = if (preserve) other else self;
+    cell.style.bg = self.style.bg.blend(other.style.bg);
+    cell.style.fg = if (preserve) self.style.bg.blend(other.style.fg) else self.style.fg.blend(other.style.bg);
+    cell.style.ul = if (preserve) self.style.bg.blend(other.style.ul) else self.style.ul.blend(other.style.bg);
 
-    const preserve_char = false;
-
-    const bg = self.style.bg.blend(other.style.bg);
-    const fg = if (preserve_char) self.style.bg.blend(other.style.fg) else self.style.fg.blend(other.style.bg);
-    // const char = if (preserve_char) other.char else self.char;
-    var style = self.style;
-    style.bg = bg;
-    style.fg = fg;
-
-    var cell = self;
-    cell.style = style;
+    cell.link = self.link;
 
     return cell;
 }
