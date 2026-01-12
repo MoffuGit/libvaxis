@@ -45,8 +45,7 @@ pub fn deinit(self: *Screen, alloc: std.mem.Allocator) void {
     alloc.free(self.buf);
 }
 
-/// writes a cell to a location. 0 indexed
-pub fn writeCellO(self: *Screen, col: u16, row: u16, cell: Cell) void {
+pub fn setCell(self: *Screen, col: u16, row: u16, cell: Cell) void {
     if (col >= self.width or
         row >= self.height)
         return;
@@ -57,9 +56,9 @@ pub fn writeCellO(self: *Screen, col: u16, row: u16, cell: Cell) void {
 
 pub fn writeCell(self: *Screen, col: u16, row: u16, cell: Cell) void {
     if (self.readCell(col, row)) |other| {
-        self.writeCellO(col, row, cell.blend(other));
+        self.setCell(col, row, cell.blend(other));
     } else {
-        self.writeCellO(col, row, cell);
+        self.setCell(col, row, cell);
     }
 }
 
