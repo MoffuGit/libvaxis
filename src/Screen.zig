@@ -8,6 +8,7 @@ const Image = @import("Image.zig");
 const Window = @import("Window.zig");
 const Winsize = @import("main.zig").Winsize;
 const Method = @import("gwidth.zig").Method;
+const Buffer = @import("Buffer.zig");
 
 const Screen = @This();
 
@@ -112,6 +113,14 @@ pub fn window(self: *Screen) Window {
         .width = self.width,
         .height = self.height,
         .screen = self,
+    };
+}
+
+pub fn buffer(self: *Screen) Buffer {
+    return .{
+        .buf = self.buf,
+        .height = self.height,
+        .width = self.width,
     };
 }
 

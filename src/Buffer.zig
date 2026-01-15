@@ -52,3 +52,18 @@ pub fn readCell(self: *const Buffer, col: u16, row: u16) ?Cell {
 pub fn clear(self: *Buffer) void {
     @memset(self.buf, .{});
 }
+
+pub fn fill(self: *Buffer, cell: Cell) void {
+    @memset(self.buf, cell);
+}
+
+fn coordsToIndex(self: *Buffer, x: u32, y: u32) u32 {
+    return y * self.width + x;
+}
+
+fn indexToCoords(self: *Buffer, index: u32) struct { x: u32, y: u32 } {
+    return .{
+        .x = index % self.width,
+        .y = index / self.width,
+    };
+}
