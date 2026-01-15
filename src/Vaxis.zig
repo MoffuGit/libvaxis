@@ -49,11 +49,9 @@ pub const Options = struct {
     system_clipboard_allocator: ?std.mem.Allocator = null,
 };
 
-/// the screen we write to
-screen: Screen,
 /// The last screen we drew. We keep this so we can efficiently update on
 /// the next render
-screen_last: InternalScreen,
+internal_screen: InternalScreen,
 
 caps: Capabilities = .{},
 
@@ -106,8 +104,7 @@ state: struct {
 pub fn init(alloc: std.mem.Allocator, opts: Options) !Vaxis {
     return .{
         .opts = opts,
-        .screen = .{},
-        .screen_last = try .init(alloc, 0, 0),
+        .internal_screen = try .init(alloc, 0, 0),
     };
 }
 
@@ -119,8 +116,7 @@ pub fn deinit(self: *Vaxis, alloc: ?std.mem.Allocator, tty: *IoWriter) void {
     self.resetState(tty) catch {};
 
     if (alloc) |a| {
-        self.screen.deinit(a);
-        self.screen_last.deinit(a);
+        self.internal_screen.deinit(a);
     }
 }
 
@@ -129,7 +125,7 @@ pub fn resetState(self: *Vaxis, tty: *IoWriter) !void {
     // always show the cursor on state reset
     tty.writeAll(ctlseqs.show_cursor) catch {};
     tty.writeAll(ctlseqs.sgr_reset) catch {};
-    if (self.screen.cursor_shape != .default) {
+    if (self.internal_screen.cursor_shape != .default) {
         // In many terminals, `.default` will set to the configured cursor shape. Others, it will
         // change to a blinking block.
         tty.print(ctlseqs.cursor_shape, .{@intFromEnum(Cell.CursorShape.default)}) catch {};
@@ -191,14 +187,11 @@ pub fn resize(
     winsize: Winsize,
 ) !void {
     log.debug("resizing screen: width={d} height={d}", .{ winsize.cols, winsize.rows });
-    self.screen.deinit(alloc);
-    self.screen = try Screen.init(alloc, winsize);
-    self.screen.width_method = self.caps.unicode;
-    // try self.screen.int(alloc, winsize.cols, winsize.rows);
+    // try screen.int(alloc, winsize.cols, winsize.rows);
     // we only init our current screen. This has the effect of redrawing
     // every cell
-    self.screen_last.deinit(alloc);
-    self.screen_last = try InternalScreen.init(alloc, winsize.cols, winsize.rows);
+    self.internal_screen.deinit(alloc);
+    self.internal_screen = try InternalScreen.init(alloc, winsize.cols, winsize.rows);
     if (self.state.alt_screen)
         try tty.writeAll(ctlseqs.home)
     else {
@@ -211,19 +204,6 @@ pub fn resize(
     self.state.cursor.col = 0;
     try tty.writeAll(ctlseqs.sgr_reset ++ ctlseqs.erase_below_cursor);
     try tty.flush();
-}
-
-/// returns a Window comprising of the entire terminal screen
-pub fn window(self: *Vaxis) Window {
-    return .{
-        .x_off = 0,
-        .y_off = 0,
-        .parent_x_off = 0,
-        .parent_y_off = 0,
-        .width = self.screen.width,
-        .height = self.screen.height,
-        .screen = &self.screen,
-    };
 }
 
 /// enter the alternate screen. The alternate screen will automatically
@@ -355,21 +335,21 @@ pub fn queueRefresh(self: *Vaxis) void {
 }
 
 /// draws the screen to the terminal
-pub fn render(self: *Vaxis, tty: *IoWriter) !void {
+pub fn render(self: *Vaxis, screen: *Screen, tty: *IoWriter) !void {
     defer self.refresh = false;
-    assert(self.screen.buf.len == @as(usize, @intCast(self.screen.width)) * self.screen.height); // correct size
-    assert(self.screen.buf.len == self.screen_last.buf.len); // same size
+    assert(screen.buf.len == @as(usize, @intCast(screen.width)) * screen.height); // correct size
+    assert(screen.buf.len == self.internal_screen.buf.len); // same size
 
     var started: bool = false;
     var sync_active: bool = false;
     errdefer if (sync_active) tty.writeAll(ctlseqs.sync_reset) catch {};
 
-    const cursor_vis_changed = self.screen.cursor_vis != self.screen_last.cursor_vis;
-    const cursor_shape_changed = self.screen.cursor_shape != self.screen_last.cursor_shape;
-    const mouse_shape_changed = self.screen.mouse_shape != self.screen_last.mouse_shape;
-    const cursor_pos_changed = self.screen.cursor_vis and
-        (self.screen.cursor_row != self.state.cursor.row or
-            self.screen.cursor_col != self.state.cursor.col);
+    const cursor_vis_changed = screen.cursor_vis != self.internal_screen.cursor_vis;
+    const cursor_shape_changed = screen.cursor_shape != self.internal_screen.cursor_shape;
+    const mouse_shape_changed = screen.mouse_shape != self.internal_screen.mouse_shape;
+    const cursor_pos_changed = screen.cursor_vis and
+        (screen.cursor_row != self.state.cursor.row or
+            screen.cursor_col != self.state.cursor.col);
     const needs_render = self.refresh or cursor_vis_changed or cursor_shape_changed or mouse_shape_changed or cursor_pos_changed;
 
     // initialize some variables
@@ -418,7 +398,7 @@ pub fn render(self: *Vaxis, tty: *IoWriter) !void {
     };
 
     // Reset skip flag on all last_screen cells
-    for (self.screen_last.buf) |*last_cell| {
+    for (self.internal_screen.buf) |*last_cell| {
         last_cell.skip = false;
     }
 
@@ -427,8 +407,8 @@ pub fn render(self: *Vaxis, tty: *IoWriter) !void {
     }
 
     var i: usize = 0;
-    while (i < self.screen.buf.len) {
-        const cell = self.screen.buf[i];
+    while (i < screen.buf.len) {
+        const cell = screen.buf[i];
         const w: u16 = blk: {
             if (cell.char.width != 0) break :blk cell.char.width;
 
@@ -441,13 +421,13 @@ pub fn render(self: *Vaxis, tty: *IoWriter) !void {
             std.debug.assert(w > 0);
             var j = i + 1;
             while (j < i + w) : (j += 1) {
-                if (j >= self.screen_last.buf.len) break;
-                self.screen_last.buf[j].skipped = true;
+                if (j >= self.internal_screen.buf.len) break;
+                self.internal_screen.buf[j].skipped = true;
             }
             col += w;
             i += w;
         }
-        if (col >= self.screen.width) {
+        if (col >= screen.width) {
             row += 1;
             col = 0;
             // Rely on terminal wrapping to reposition into next row instead of forcing it
@@ -456,7 +436,7 @@ pub fn render(self: *Vaxis, tty: *IoWriter) !void {
         }
         // If cell is the same as our last frame, we don't need to do
         // anything
-        const last = self.screen_last.buf[i];
+        const last = self.internal_screen.buf[i];
         if ((!self.refresh and
             last.eql(cell) and
             !last.skipped and
@@ -474,13 +454,13 @@ pub fn render(self: *Vaxis, tty: *IoWriter) !void {
         if (!started) {
             try startRender.run(self, tty, &cursor_pos, &reposition, &started, &sync_active);
         }
-        self.screen_last.buf[i].skipped = false;
+        self.internal_screen.buf[i].skipped = false;
         defer {
             cursor = cell.style;
             link = cell.link;
         }
         // Set this cell in the last frame
-        self.screen_last.writeCell(col, row, cell);
+        self.internal_screen.writeCell(col, row, cell);
 
         // If we support scaled text, we set the flags now
         if (self.caps.scaled_text and cell.scale.scale > 1) {
@@ -494,8 +474,8 @@ pub fn render(self: *Vaxis, tty: *IoWriter) !void {
                     if (skipped_row == 0 and skipped_col == 0) {
                         continue;
                     }
-                    const skipped_i = (@as(usize, @intCast(skipped_row + row)) * self.screen_last.width) + (skipped_col + col);
-                    self.screen_last.buf[skipped_i].skip = true;
+                    const skipped_i = (@as(usize, @intCast(skipped_row + row)) * self.internal_screen.width) + (skipped_col + col);
+                    self.internal_screen.buf[skipped_i].skip = true;
                 }
             }
         }
@@ -778,51 +758,51 @@ pub fn render(self: *Vaxis, tty: *IoWriter) !void {
         cursor_pos.row = row;
     }
     if (!started) return;
-    if (self.screen.cursor_vis) {
+    if (screen.cursor_vis) {
         if (self.state.alt_screen) {
             try tty.print(
                 ctlseqs.cup,
                 .{
-                    self.screen.cursor_row + 1,
-                    self.screen.cursor_col + 1,
+                    screen.cursor_row + 1,
+                    screen.cursor_col + 1,
                 },
             );
         } else {
             // TODO: position cursor relative to current location
             try tty.writeByte('\r');
-            if (self.screen.cursor_row >= cursor_pos.row) {
-                for (0..(self.screen.cursor_row - cursor_pos.row)) |_| {
+            if (screen.cursor_row >= cursor_pos.row) {
+                for (0..(screen.cursor_row - cursor_pos.row)) |_| {
                     try tty.writeByte('\n');
                 }
             } else {
-                for (0..(cursor_pos.row - self.screen.cursor_row)) |_| {
+                for (0..(cursor_pos.row - screen.cursor_row)) |_| {
                     try tty.writeAll(ctlseqs.ri);
                 }
             }
-            if (self.screen.cursor_col > 0)
-                try tty.print(ctlseqs.cuf, .{self.screen.cursor_col});
+            if (screen.cursor_col > 0)
+                try tty.print(ctlseqs.cuf, .{screen.cursor_col});
         }
-        self.state.cursor.row = self.screen.cursor_row;
-        self.state.cursor.col = self.screen.cursor_col;
+        self.state.cursor.row = screen.cursor_row;
+        self.state.cursor.col = screen.cursor_col;
         try tty.writeAll(ctlseqs.show_cursor);
     } else {
         self.state.cursor.row = cursor_pos.row;
         self.state.cursor.col = cursor_pos.col;
     }
-    self.screen_last.cursor_vis = self.screen.cursor_vis;
-    if (self.screen.mouse_shape != self.screen_last.mouse_shape) {
+    self.internal_screen.cursor_vis = screen.cursor_vis;
+    if (screen.mouse_shape != self.internal_screen.mouse_shape) {
         try tty.print(
             ctlseqs.osc22_mouse_shape,
-            .{@tagName(self.screen.mouse_shape)},
+            .{@tagName(screen.mouse_shape)},
         );
-        self.screen_last.mouse_shape = self.screen.mouse_shape;
+        self.internal_screen.mouse_shape = screen.mouse_shape;
     }
-    if (self.screen.cursor_shape != self.screen_last.cursor_shape) {
+    if (screen.cursor_shape != self.internal_screen.cursor_shape) {
         try tty.print(
             ctlseqs.cursor_shape,
-            .{@intFromEnum(self.screen.cursor_shape)},
+            .{@intFromEnum(screen.cursor_shape)},
         );
-        self.screen_last.cursor_shape = self.screen.cursor_shape;
+        self.internal_screen.cursor_shape = screen.cursor_shape;
     }
 
     try tty.writeAll(ctlseqs.sync_reset);
@@ -865,11 +845,6 @@ pub fn setBracketedPaste(self: *Vaxis, tty: *IoWriter, enable: bool) !void {
     self.state.bracketed_paste = enable;
 }
 
-/// set the mouse shape
-pub fn setMouseShape(self: *Vaxis, shape: Shape) void {
-    self.screen.mouse_shape = shape;
-}
-
 /// Change the mouse reporting mode
 pub fn setMouseMode(self: *Vaxis, tty: *IoWriter, enable: bool) !void {
     if (enable) {
@@ -887,28 +862,6 @@ pub fn setMouseMode(self: *Vaxis, tty: *IoWriter, enable: bool) !void {
     }
 
     try tty.flush();
-}
-
-/// Translate pixel mouse coordinates to cell + offset
-pub fn translateMouse(self: Vaxis, mouse: Mouse) Mouse {
-    if (self.screen.width == 0 or self.screen.height == 0) return mouse;
-    var result = mouse;
-    if (self.state.pixel_mouse) {
-        std.debug.assert(mouse.xoffset == 0);
-        std.debug.assert(mouse.yoffset == 0);
-        const xpos = mouse.col;
-        const ypos = mouse.row;
-        const xextra = self.screen.width_pix % self.screen.width;
-        const yextra = self.screen.height_pix % self.screen.height;
-        const xcell: i16 = @intCast((self.screen.width_pix - xextra) / self.screen.width);
-        const ycell: i16 = @intCast((self.screen.height_pix - yextra) / self.screen.height);
-        if (xcell == 0 or ycell == 0) return mouse;
-        result.col = @divFloor(xpos, xcell);
-        result.row = @divFloor(ypos, ycell);
-        result.xoffset = @intCast(@mod(xpos, xcell));
-        result.yoffset = @intCast(@mod(ypos, ycell));
-    }
-    return result;
 }
 
 /// Transmit an image using the local filesystem. Allocates only for base64 encoding
@@ -1167,279 +1120,279 @@ pub fn deviceStatusReport(_: Vaxis, tty: *IoWriter) !void {
 /// the cursor will be put on the next line after the last line is printed. This is useful to
 /// sequentially print data in a styled format to eg. stdout. This function returns an error if you
 /// are not in the alt screen. The cursor is always hidden, and mouse shapes are not available
-pub fn prettyPrint(self: *Vaxis, tty: *IoWriter) !void {
-    if (self.state.alt_screen) return error.NotInPrimaryScreen;
-
-    try tty.writeAll(ctlseqs.hide_cursor);
-    try tty.writeAll(ctlseqs.sync_set);
-    defer tty.writeAll(ctlseqs.sync_reset) catch {};
-    try tty.writeAll(ctlseqs.sgr_reset);
-    defer tty.writeAll(ctlseqs.sgr_reset) catch {};
-
-    var reposition: bool = false;
-    var row: u16 = 0;
-    var col: u16 = 0;
-    var cursor: Style = .{};
-    var link: Hyperlink = .{};
-    var cursor_pos: struct {
-        row: u16 = 0,
-        col: u16 = 0,
-    } = .{};
-
-    var i: u16 = 0;
-    while (i < self.screen.buf.len) {
-        const cell = self.screen.buf[i];
-        const w = blk: {
-            if (cell.char.width != 0) break :blk cell.char.width;
-
-            const method: gwidth.Method = self.caps.unicode;
-            const width = gwidth.gwidth(cell.char.grapheme, method);
-            break :blk @max(1, width);
-        };
-        defer {
-            // advance by the width of this char mod 1
-            std.debug.assert(w > 0);
-            var j = i + 1;
-            while (j < i + w) : (j += 1) {
-                if (j >= self.screen_last.buf.len) break;
-                self.screen_last.buf[j].skipped = true;
-            }
-            col += w;
-            i += w;
-        }
-        if (col >= self.screen.width) {
-            row += 1;
-            col = 0;
-            // Rely on terminal wrapping to reposition into next row instead of forcing it
-            if (!cell.wrapped)
-                reposition = true;
-        }
-        if (cell.default) {
-            reposition = true;
-            continue;
-        }
-        defer {
-            cursor = cell.style;
-            link = cell.link;
-        }
-
-        // reposition the cursor, if needed
-        if (reposition) {
-            reposition = false;
-            link = .{};
-            if (cursor_pos.row == row) {
-                const n = col - cursor_pos.col;
-                if (n > 0)
-                    try tty.print(ctlseqs.cuf, .{n});
-            } else {
-                const n = row - cursor_pos.row;
-                for (0..n) |_| {
-                    try tty.writeByte('\n');
-                }
-                try tty.writeByte('\r');
-                if (col > 0)
-                    try tty.print(ctlseqs.cuf, .{col});
-            }
-        }
-
-        if (cell.image) |img| {
-            try tty.print(
-                ctlseqs.kitty_graphics_preamble,
-                .{img.img_id},
-            );
-            if (img.options.pixel_offset) |offset| {
-                try tty.print(
-                    ",X={d},Y={d}",
-                    .{ offset.x, offset.y },
-                );
-            }
-            if (img.options.clip_region) |clip| {
-                if (clip.x) |x|
-                    try tty.print(",x={d}", .{x});
-                if (clip.y) |y|
-                    try tty.print(",y={d}", .{y});
-                if (clip.width) |width|
-                    try tty.print(",w={d}", .{width});
-                if (clip.height) |height|
-                    try tty.print(",h={d}", .{height});
-            }
-            if (img.options.size) |size| {
-                if (size.rows) |rows|
-                    try tty.print(",r={d}", .{rows});
-                if (size.cols) |cols|
-                    try tty.print(",c={d}", .{cols});
-            }
-            if (img.options.z_index) |z| {
-                try tty.print(",z={d}", .{z});
-            }
-            try tty.writeAll(ctlseqs.kitty_graphics_closing);
-        }
-
-        // something is different, so let's loop through everything and
-        // find out what
-
-        // foreground
-        if (!Cell.Color.eql(cursor.fg, cell.style.fg)) {
-            switch (cell.style.fg) {
-                .default => try tty.writeAll(ctlseqs.fg_reset),
-                .index => |idx| {
-                    switch (idx) {
-                        0...7 => try tty.print(ctlseqs.fg_base, .{idx}),
-                        8...15 => try tty.print(ctlseqs.fg_bright, .{idx - 8}),
-                        else => {
-                            switch (self.sgr) {
-                                .standard => try tty.print(ctlseqs.fg_indexed, .{idx}),
-                                .legacy => try tty.print(ctlseqs.fg_indexed_legacy, .{idx}),
-                            }
-                        },
-                    }
-                },
-                .rgb => |rgb| {
-                    switch (self.sgr) {
-                        .standard => try tty.print(ctlseqs.fg_rgb, .{ rgb[0], rgb[1], rgb[2] }),
-                        .legacy => try tty.print(ctlseqs.fg_rgb_legacy, .{ rgb[0], rgb[1], rgb[2] }),
-                    }
-                },
-            }
-        }
-        // background
-        if (!Cell.Color.eql(cursor.bg, cell.style.bg)) {
-            switch (cell.style.bg) {
-                .default => try tty.writeAll(ctlseqs.bg_reset),
-                .index => |idx| {
-                    switch (idx) {
-                        0...7 => try tty.print(ctlseqs.bg_base, .{idx}),
-                        8...15 => try tty.print(ctlseqs.bg_bright, .{idx - 8}),
-                        else => {
-                            switch (self.sgr) {
-                                .standard => try tty.print(ctlseqs.bg_indexed, .{idx}),
-                                .legacy => try tty.print(ctlseqs.bg_indexed_legacy, .{idx}),
-                            }
-                        },
-                    }
-                },
-                .rgb => |rgb| {
-                    switch (self.sgr) {
-                        .standard => try tty.print(ctlseqs.bg_rgb, .{ rgb[0], rgb[1], rgb[2] }),
-                        .legacy => try tty.print(ctlseqs.bg_rgb_legacy, .{ rgb[0], rgb[1], rgb[2] }),
-                    }
-                },
-            }
-        }
-        // underline color
-        if (!Cell.Color.eql(cursor.ul, cell.style.ul)) {
-            switch (cell.style.ul) {
-                .default => try tty.writeAll(ctlseqs.ul_reset),
-                .index => |idx| {
-                    switch (self.sgr) {
-                        .standard => try tty.print(ctlseqs.ul_indexed, .{idx}),
-                        .legacy => try tty.print(ctlseqs.ul_indexed_legacy, .{idx}),
-                    }
-                },
-                .rgb => |rgb| {
-                    if (self.enable_workarounds)
-                        try tty.print(ctlseqs.ul_rgb_conpty, .{ rgb[0], rgb[1], rgb[2] })
-                    else switch (self.sgr) {
-                        .standard => try tty.print(ctlseqs.ul_rgb, .{ rgb[0], rgb[1], rgb[2] }),
-                        .legacy => {
-                            try tty.print(ctlseqs.ul_rgb_legacy, .{ rgb[0], rgb[1], rgb[2] });
-                        },
-                    }
-                },
-            }
-        }
-        // underline style
-        if (cursor.ul_style != cell.style.ul_style) {
-            const seq = switch (cell.style.ul_style) {
-                .off => ctlseqs.ul_off,
-                .single => ctlseqs.ul_single,
-                .double => ctlseqs.ul_double,
-                .curly => ctlseqs.ul_curly,
-                .dotted => ctlseqs.ul_dotted,
-                .dashed => ctlseqs.ul_dashed,
-            };
-            try tty.writeAll(seq);
-        }
-        // bold
-        if (cursor.bold != cell.style.bold) {
-            const seq = switch (cell.style.bold) {
-                true => ctlseqs.bold_set,
-                false => ctlseqs.bold_dim_reset,
-            };
-            try tty.writeAll(seq);
-            if (cell.style.dim) {
-                try tty.writeAll(ctlseqs.dim_set);
-            }
-        }
-        // dim
-        if (cursor.dim != cell.style.dim) {
-            const seq = switch (cell.style.dim) {
-                true => ctlseqs.dim_set,
-                false => ctlseqs.bold_dim_reset,
-            };
-            try tty.writeAll(seq);
-            if (cell.style.bold) {
-                try tty.writeAll(ctlseqs.bold_set);
-            }
-        }
-        // dim
-        if (cursor.italic != cell.style.italic) {
-            const seq = switch (cell.style.italic) {
-                true => ctlseqs.italic_set,
-                false => ctlseqs.italic_reset,
-            };
-            try tty.writeAll(seq);
-        }
-        // dim
-        if (cursor.blink != cell.style.blink) {
-            const seq = switch (cell.style.blink) {
-                true => ctlseqs.blink_set,
-                false => ctlseqs.blink_reset,
-            };
-            try tty.writeAll(seq);
-        }
-        // reverse
-        if (cursor.reverse != cell.style.reverse) {
-            const seq = switch (cell.style.reverse) {
-                true => ctlseqs.reverse_set,
-                false => ctlseqs.reverse_reset,
-            };
-            try tty.writeAll(seq);
-        }
-        // invisible
-        if (cursor.invisible != cell.style.invisible) {
-            const seq = switch (cell.style.invisible) {
-                true => ctlseqs.invisible_set,
-                false => ctlseqs.invisible_reset,
-            };
-            try tty.writeAll(seq);
-        }
-        // strikethrough
-        if (cursor.strikethrough != cell.style.strikethrough) {
-            const seq = switch (cell.style.strikethrough) {
-                true => ctlseqs.strikethrough_set,
-                false => ctlseqs.strikethrough_reset,
-            };
-            try tty.writeAll(seq);
-        }
-
-        // url
-        if (!std.mem.eql(u8, link.uri, cell.link.uri)) {
-            var ps = cell.link.params;
-            if (cell.link.uri.len == 0) {
-                // Empty out the params no matter what if we don't have
-                // a url
-                ps = "";
-            }
-            try tty.print(ctlseqs.osc8, .{ ps, cell.link.uri });
-        }
-        try tty.writeAll(cell.char.grapheme);
-        cursor_pos.col = col + w;
-        cursor_pos.row = row;
-    }
-    try tty.writeAll("\r\n");
-    try tty.flush();
-}
+// pub fn prettyPrint(self: *Vaxis, tty: *IoWriter) !void {
+//     if (self.state.alt_screen) return error.NotInPrimaryScreen;
+//
+//     try tty.writeAll(ctlseqs.hide_cursor);
+//     try tty.writeAll(ctlseqs.sync_set);
+//     defer tty.writeAll(ctlseqs.sync_reset) catch {};
+//     try tty.writeAll(ctlseqs.sgr_reset);
+//     defer tty.writeAll(ctlseqs.sgr_reset) catch {};
+//
+//     var reposition: bool = false;
+//     var row: u16 = 0;
+//     var col: u16 = 0;
+//     var cursor: Style = .{};
+//     var link: Hyperlink = .{};
+//     var cursor_pos: struct {
+//         row: u16 = 0,
+//         col: u16 = 0,
+//     } = .{};
+//
+//     var i: u16 = 0;
+//     while (i < screen.buf.len) {
+//         const cell = screen.buf[i];
+//         const w = blk: {
+//             if (cell.char.width != 0) break :blk cell.char.width;
+//
+//             const method: gwidth.Method = self.caps.unicode;
+//             const width = gwidth.gwidth(cell.char.grapheme, method);
+//             break :blk @max(1, width);
+//         };
+//         defer {
+//             // advance by the width of this char mod 1
+//             std.debug.assert(w > 0);
+//             var j = i + 1;
+//             while (j < i + w) : (j += 1) {
+//                 if (j >= self.internal_screen.buf.len) break;
+//                 self.internal_screen.buf[j].skipped = true;
+//             }
+//             col += w;
+//             i += w;
+//         }
+//         if (col >= screen.width) {
+//             row += 1;
+//             col = 0;
+//             // Rely on terminal wrapping to reposition into next row instead of forcing it
+//             if (!cell.wrapped)
+//                 reposition = true;
+//         }
+//         if (cell.default) {
+//             reposition = true;
+//             continue;
+//         }
+//         defer {
+//             cursor = cell.style;
+//             link = cell.link;
+//         }
+//
+//         // reposition the cursor, if needed
+//         if (reposition) {
+//             reposition = false;
+//             link = .{};
+//             if (cursor_pos.row == row) {
+//                 const n = col - cursor_pos.col;
+//                 if (n > 0)
+//                     try tty.print(ctlseqs.cuf, .{n});
+//             } else {
+//                 const n = row - cursor_pos.row;
+//                 for (0..n) |_| {
+//                     try tty.writeByte('\n');
+//                 }
+//                 try tty.writeByte('\r');
+//                 if (col > 0)
+//                     try tty.print(ctlseqs.cuf, .{col});
+//             }
+//         }
+//
+//         if (cell.image) |img| {
+//             try tty.print(
+//                 ctlseqs.kitty_graphics_preamble,
+//                 .{img.img_id},
+//             );
+//             if (img.options.pixel_offset) |offset| {
+//                 try tty.print(
+//                     ",X={d},Y={d}",
+//                     .{ offset.x, offset.y },
+//                 );
+//             }
+//             if (img.options.clip_region) |clip| {
+//                 if (clip.x) |x|
+//                     try tty.print(",x={d}", .{x});
+//                 if (clip.y) |y|
+//                     try tty.print(",y={d}", .{y});
+//                 if (clip.width) |width|
+//                     try tty.print(",w={d}", .{width});
+//                 if (clip.height) |height|
+//                     try tty.print(",h={d}", .{height});
+//             }
+//             if (img.options.size) |size| {
+//                 if (size.rows) |rows|
+//                     try tty.print(",r={d}", .{rows});
+//                 if (size.cols) |cols|
+//                     try tty.print(",c={d}", .{cols});
+//             }
+//             if (img.options.z_index) |z| {
+//                 try tty.print(",z={d}", .{z});
+//             }
+//             try tty.writeAll(ctlseqs.kitty_graphics_closing);
+//         }
+//
+//         // something is different, so let's loop through everything and
+//         // find out what
+//
+//         // foreground
+//         if (!Cell.Color.eql(cursor.fg, cell.style.fg)) {
+//             switch (cell.style.fg) {
+//                 .default => try tty.writeAll(ctlseqs.fg_reset),
+//                 .index => |idx| {
+//                     switch (idx) {
+//                         0...7 => try tty.print(ctlseqs.fg_base, .{idx}),
+//                         8...15 => try tty.print(ctlseqs.fg_bright, .{idx - 8}),
+//                         else => {
+//                             switch (self.sgr) {
+//                                 .standard => try tty.print(ctlseqs.fg_indexed, .{idx}),
+//                                 .legacy => try tty.print(ctlseqs.fg_indexed_legacy, .{idx}),
+//                             }
+//                         },
+//                     }
+//                 },
+//                 .rgb => |rgb| {
+//                     switch (self.sgr) {
+//                         .standard => try tty.print(ctlseqs.fg_rgb, .{ rgb[0], rgb[1], rgb[2] }),
+//                         .legacy => try tty.print(ctlseqs.fg_rgb_legacy, .{ rgb[0], rgb[1], rgb[2] }),
+//                     }
+//                 },
+//             }
+//         }
+//         // background
+//         if (!Cell.Color.eql(cursor.bg, cell.style.bg)) {
+//             switch (cell.style.bg) {
+//                 .default => try tty.writeAll(ctlseqs.bg_reset),
+//                 .index => |idx| {
+//                     switch (idx) {
+//                         0...7 => try tty.print(ctlseqs.bg_base, .{idx}),
+//                         8...15 => try tty.print(ctlseqs.bg_bright, .{idx - 8}),
+//                         else => {
+//                             switch (self.sgr) {
+//                                 .standard => try tty.print(ctlseqs.bg_indexed, .{idx}),
+//                                 .legacy => try tty.print(ctlseqs.bg_indexed_legacy, .{idx}),
+//                             }
+//                         },
+//                     }
+//                 },
+//                 .rgb => |rgb| {
+//                     switch (self.sgr) {
+//                         .standard => try tty.print(ctlseqs.bg_rgb, .{ rgb[0], rgb[1], rgb[2] }),
+//                         .legacy => try tty.print(ctlseqs.bg_rgb_legacy, .{ rgb[0], rgb[1], rgb[2] }),
+//                     }
+//                 },
+//             }
+//         }
+//         // underline color
+//         if (!Cell.Color.eql(cursor.ul, cell.style.ul)) {
+//             switch (cell.style.ul) {
+//                 .default => try tty.writeAll(ctlseqs.ul_reset),
+//                 .index => |idx| {
+//                     switch (self.sgr) {
+//                         .standard => try tty.print(ctlseqs.ul_indexed, .{idx}),
+//                         .legacy => try tty.print(ctlseqs.ul_indexed_legacy, .{idx}),
+//                     }
+//                 },
+//                 .rgb => |rgb| {
+//                     if (self.enable_workarounds)
+//                         try tty.print(ctlseqs.ul_rgb_conpty, .{ rgb[0], rgb[1], rgb[2] })
+//                     else switch (self.sgr) {
+//                         .standard => try tty.print(ctlseqs.ul_rgb, .{ rgb[0], rgb[1], rgb[2] }),
+//                         .legacy => {
+//                             try tty.print(ctlseqs.ul_rgb_legacy, .{ rgb[0], rgb[1], rgb[2] });
+//                         },
+//                     }
+//                 },
+//             }
+//         }
+//         // underline style
+//         if (cursor.ul_style != cell.style.ul_style) {
+//             const seq = switch (cell.style.ul_style) {
+//                 .off => ctlseqs.ul_off,
+//                 .single => ctlseqs.ul_single,
+//                 .double => ctlseqs.ul_double,
+//                 .curly => ctlseqs.ul_curly,
+//                 .dotted => ctlseqs.ul_dotted,
+//                 .dashed => ctlseqs.ul_dashed,
+//             };
+//             try tty.writeAll(seq);
+//         }
+//         // bold
+//         if (cursor.bold != cell.style.bold) {
+//             const seq = switch (cell.style.bold) {
+//                 true => ctlseqs.bold_set,
+//                 false => ctlseqs.bold_dim_reset,
+//             };
+//             try tty.writeAll(seq);
+//             if (cell.style.dim) {
+//                 try tty.writeAll(ctlseqs.dim_set);
+//             }
+//         }
+//         // dim
+//         if (cursor.dim != cell.style.dim) {
+//             const seq = switch (cell.style.dim) {
+//                 true => ctlseqs.dim_set,
+//                 false => ctlseqs.bold_dim_reset,
+//             };
+//             try tty.writeAll(seq);
+//             if (cell.style.bold) {
+//                 try tty.writeAll(ctlseqs.bold_set);
+//             }
+//         }
+//         // dim
+//         if (cursor.italic != cell.style.italic) {
+//             const seq = switch (cell.style.italic) {
+//                 true => ctlseqs.italic_set,
+//                 false => ctlseqs.italic_reset,
+//             };
+//             try tty.writeAll(seq);
+//         }
+//         // dim
+//         if (cursor.blink != cell.style.blink) {
+//             const seq = switch (cell.style.blink) {
+//                 true => ctlseqs.blink_set,
+//                 false => ctlseqs.blink_reset,
+//             };
+//             try tty.writeAll(seq);
+//         }
+//         // reverse
+//         if (cursor.reverse != cell.style.reverse) {
+//             const seq = switch (cell.style.reverse) {
+//                 true => ctlseqs.reverse_set,
+//                 false => ctlseqs.reverse_reset,
+//             };
+//             try tty.writeAll(seq);
+//         }
+//         // invisible
+//         if (cursor.invisible != cell.style.invisible) {
+//             const seq = switch (cell.style.invisible) {
+//                 true => ctlseqs.invisible_set,
+//                 false => ctlseqs.invisible_reset,
+//             };
+//             try tty.writeAll(seq);
+//         }
+//         // strikethrough
+//         if (cursor.strikethrough != cell.style.strikethrough) {
+//             const seq = switch (cell.style.strikethrough) {
+//                 true => ctlseqs.strikethrough_set,
+//                 false => ctlseqs.strikethrough_reset,
+//             };
+//             try tty.writeAll(seq);
+//         }
+//
+//         // url
+//         if (!std.mem.eql(u8, link.uri, cell.link.uri)) {
+//             var ps = cell.link.params;
+//             if (cell.link.uri.len == 0) {
+//                 // Empty out the params no matter what if we don't have
+//                 // a url
+//                 ps = "";
+//             }
+//             try tty.print(ctlseqs.osc8, .{ ps, cell.link.uri });
+//         }
+//         try tty.writeAll(cell.char.grapheme);
+//         cursor_pos.col = col + w;
+//         cursor_pos.row = row;
+//     }
+//     try tty.writeAll("\r\n");
+//     try tty.flush();
+// }
 
 /// Set the terminal's current working directory
 pub fn setTerminalWorkingDirectory(_: *Vaxis, tty: *IoWriter, path: []const u8) !void {
@@ -1460,6 +1413,7 @@ pub fn setTerminalWorkingDirectory(_: *Vaxis, tty: *IoWriter, path: []const u8) 
 }
 
 test "render: no output when no changes" {
+    var screen: Screen = .{};
     var vx = try Vaxis.init(std.testing.allocator, .{});
     var deinit_writer = std.io.Writer.Allocating.init(std.testing.allocator);
     defer deinit_writer.deinit();
@@ -1467,7 +1421,7 @@ test "render: no output when no changes" {
 
     var render_writer = std.io.Writer.Allocating.init(std.testing.allocator);
     defer render_writer.deinit();
-    try vx.render(&render_writer.writer);
+    try vx.render(&screen, &render_writer.writer);
     const output = try render_writer.toOwnedSlice();
     defer std.testing.allocator.free(output);
     try std.testing.expectEqual(@as(usize, 0), output.len);

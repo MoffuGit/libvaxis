@@ -20,6 +20,7 @@ pub const Color = Cell.Color;
 pub const Image = @import("Image.zig");
 pub const Mouse = @import("Mouse.zig");
 pub const Screen = @import("Screen.zig");
+pub const Buffer = @import("Buffer.zig");
 pub const AllocatingScreen = @import("InternalScreen.zig");
 pub const Parser = @import("Parser.zig");
 pub const Window = @import("Window.zig");
