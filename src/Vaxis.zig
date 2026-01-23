@@ -187,9 +187,6 @@ pub fn resize(
     winsize: Winsize,
 ) !void {
     log.debug("resizing screen: width={d} height={d}", .{ winsize.cols, winsize.rows });
-    // try screen.int(alloc, winsize.cols, winsize.rows);
-    // we only init our current screen. This has the effect of redrawing
-    // every cell
     self.internal_screen.deinit(alloc);
     self.internal_screen = try InternalScreen.init(alloc, winsize.cols, winsize.rows);
     if (self.state.alt_screen)
@@ -202,7 +199,7 @@ pub fn resize(
     }
     self.state.cursor.row = 0;
     self.state.cursor.col = 0;
-    try tty.writeAll(ctlseqs.sgr_reset ++ ctlseqs.erase_below_cursor);
+    try tty.writeAll(ctlseqs.sgr_reset);
     try tty.flush();
 }
 
