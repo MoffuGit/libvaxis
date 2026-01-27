@@ -199,7 +199,7 @@ pub fn resize(
     }
     self.state.cursor.row = 0;
     self.state.cursor.col = 0;
-    try tty.writeAll(ctlseqs.sgr_reset);
+    try tty.writeAll(ctlseqs.sgr_reset ++ ctlseqs.erase_below_cursor);
     try tty.flush();
 }
 
