@@ -324,7 +324,7 @@ pub fn blend(self: Self, other: Self) Self {
         return other;
     }
 
-    const preserve = false;
+    const preserve = std.mem.eql(u8, self.char.grapheme, " ") or self.style.fg.isTransparent();
 
     var cell = if (preserve) other else self;
     cell.style.bg = self.style.bg.blend(other.style.bg);
