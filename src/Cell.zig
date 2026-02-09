@@ -259,6 +259,14 @@ pub const Color = union(enum) {
         return .{ .rgba = .{ f32Tou8(blended[0]), f32Tou8(blended[1]), f32Tou8(blended[2]), f32Tou8(other.alpha()) } };
     }
 
+    pub fn setAlpha(self: Color, a: f32) Color {
+        return switch (self) {
+            .default, .index => self,
+            .rgb => |rgb| .{ .rgba = .{ rgb[0], rgb[1], rgb[2], f32Tou8(a) } },
+            .rgba => |rgba| .{ .rgba = .{ rgba[0], rgba[1], rgba[2], f32Tou8(a) } },
+        };
+    }
+
     pub fn rgbFromUint(val: u24) Color {
         const r_bits = val & 0b11111111_00000000_00000000;
         const g_bits = val & 0b00000000_11111111_00000000;
